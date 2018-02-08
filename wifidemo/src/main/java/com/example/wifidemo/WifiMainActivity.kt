@@ -11,6 +11,7 @@ import android.support.v7.app.AppCompatActivity
 import android.support.v7.widget.LinearLayoutManager
 import android.support.v7.widget.RecyclerView
 import android.widget.Button
+import android.widget.EditText
 import android.widget.TextView
 import android.widget.Toast
 import com.example.zhangmingzhe.zmzdemo.util.LogUtils
@@ -18,8 +19,9 @@ import com.example.zlibrary.AppConstant
 import io.reactivex.Observable
 import io.reactivex.android.schedulers.AndroidSchedulers
 import io.reactivex.schedulers.Schedulers
-import java.net.DatagramPacket
-import java.net.DatagramSocket
+import java.io.InputStream
+import java.io.OutputStream
+import java.net.*
 import java.util.*
 
 
@@ -31,21 +33,23 @@ class WifiMainActivity : AppCompatActivity() {
     private lateinit var mAdapter: WifiAdapter
     private lateinit var mUpdAdapter: UdpAdapter
     private lateinit var mTextView: TextView
+    private lateinit var mEdit: EditText
     private val mPeerListener: WifiP2pManager.PeerListListener = WifiP2pManager.PeerListListener { peers ->
-        run {
-            LogUtils.i(AppConstant().ZTAG, "PeerListListener:call ")
-            mAdapter = WifiAdapter(object : WifiAdapter.WifiItemClickListener {
-                override fun onItemClick(device: WifiP2pDevice) {
-                    connectToDevice(device)
-                }
-            })
-            val list = peers.deviceList.toMutableList()
-            LogUtils.i(AppConstant().ZTAG, "List size: $list.size")
-            mAdapter.setDatas(list)
-            mRecyclerView.adapter = mAdapter
-        }
+        LogUtils.i(AppConstant().ZTAG, "PeerListListener:call ")
+        mAdapter = WifiAdapter(object : WifiAdapter.WifiItemClickListener {
+            override fun onItemClick(device: WifiP2pDevice) {
+                connectToDevice(device)
+            }
+        })
+        val list = peers.deviceList.toMutableList()
+        LogUtils.i(AppConstant().ZTAG, "List size: $list.size")
+        mAdapter.setDatas(list)
+        mRecyclerView.adapter = mAdapter
     }
-    private lateinit var mHostAddress: String
+    lateinit var mHostAddress: InetAddress
+    private lateinit var mInputStream: InputStream
+    private lateinit var mOutputStream: OutputStream
+    private lateinit var mSocket: Socket
 
     private val mActionListener: WifiP2pManager.ActionListener = object : WifiP2pManager.ActionListener {
         override fun onSuccess() {
@@ -62,6 +66,7 @@ class WifiMainActivity : AppCompatActivity() {
         val config = WifiP2pConfig()
         config.deviceAddress = device.deviceAddress
         mManager.connect(mChannel, config, mActionListener)
+        mTextView.text = device.deviceAddress
     }
 
     private lateinit var mRecyclerView: RecyclerView
@@ -81,18 +86,71 @@ class WifiMainActivity : AppCompatActivity() {
 
         mRecyclerView = findViewById(R.id.rv_wifi_list)
         mTextView = findViewById(R.id.textView_udp_address)
+        mEdit = findViewById(R.id.editText_message)
         mRecyclerView.layoutManager = LinearLayoutManager(this@WifiMainActivity)
         findViewById<Button>(R.id.button_discover).setOnClickListener({
             mManager.discoverPeers(mChannel, mActionListener)
         })
 
         findViewById<Button>(R.id.button_receive_udp).setOnClickListener({
-            setViewToUpd()
+            setViewToMessage()
             startReceiveUdp()
         })
+
+        findViewById<Button>(R.id.button_start_service).setOnClickListener({
+            startSockService()
+        })
+
+        findViewById<Button>(R.id.button_send).setOnClickListener {
+            sendMessageToService()
+        }
     }
 
-    private fun setViewToUpd() {
+    private fun sendMessageToService() {
+        Observable.just(mOutputStream)
+                .map {
+                    mOutputStream.write(mEdit.text.toString().toByteArray())
+                }
+                .subscribeOn(Schedulers.io())
+                .observeOn(AndroidSchedulers.mainThread())
+                .subscribe {
+                    Toast.makeText(this@WifiMainActivity, "Send Success", Toast.LENGTH_SHORT).show()
+                }
+    }
+
+    fun startSockService() {
+        val serverSocket = ServerSocket(2018, 5, mHostAddress)
+        Observable.just(serverSocket)
+                .map {
+                    mSocket = serverSocket.accept()
+                    mInputStream = mSocket.getInputStream()
+                    mOutputStream = mSocket.getOutputStream()
+                }
+                .subscribeOn(Schedulers.io())
+                .observeOn(AndroidSchedulers.mainThread())
+                .subscribe {
+                    Toast.makeText(this@WifiMainActivity, "Connect Success", Toast.LENGTH_SHORT).show()
+                    setViewToMessage()
+                    startReviceSocketMessage()
+                }
+    }
+
+    private fun startReviceSocketMessage() {
+        Observable.create<String> { e ->
+            val bytes = ByteArray(1024)
+            while (true) {
+                val res = mInputStream.read(bytes)
+                e.onNext(res.toString())
+            }
+        }.subscribeOn(Schedulers.io())
+                .observeOn(AndroidSchedulers.mainThread())
+                .subscribe { s ->
+                    mUpdAdapter.addMessageValue(s)
+                    mUpdAdapter.notifyDataSetChanged()
+                }
+    }
+
+    private fun setViewToMessage() {
         mUpdAdapter = UdpAdapter(object : UdpAdapter.UpdItemClickListener {
             override fun onItemClick(device: String) {
                 TODO("not implemented") //To change body of created functions use File | Settings | File Templates.
@@ -100,6 +158,7 @@ class WifiMainActivity : AppCompatActivity() {
         })
         mUpdAdapter.setDatas(ArrayList())
         mRecyclerView.adapter = mUpdAdapter
+        mTextView.text = mHostAddress.hostAddress
     }
 
     private fun startReceiveUdp() {
@@ -109,7 +168,7 @@ class WifiMainActivity : AppCompatActivity() {
             val dp = DatagramPacket(buf, buf.size)
             while (true) {
                 ds.receive(dp)
-                mHostAddress = dp.address.hostAddress
+                mHostAddress = dp.address
                 val data = String(dp.data)
                 e.onNext(data)
                 if (data == "zmz") {
@@ -122,14 +181,24 @@ class WifiMainActivity : AppCompatActivity() {
                 .subscribeOn(Schedulers.io())
                 .observeOn(AndroidSchedulers.mainThread())
                 .subscribe { s ->
-                    mTextView.text = mHostAddress
+                    mTextView.text = mHostAddress.hostAddress
                     mUpdAdapter.addMessageValue(s)
                     mUpdAdapter.notifyDataSetChanged()
                 }
     }
 
-    private fun connectTcpToService() {
-
+    fun connectTcpToService() {
+        Observable.just(mHostAddress)
+                .map {
+                    mSocket = Socket(mHostAddress, 2018)
+                    mInputStream = mSocket.getInputStream()
+                    mOutputStream = mSocket.getOutputStream()
+                }
+                .subscribeOn(Schedulers.io())
+                .observeOn(AndroidSchedulers.mainThread())
+                .subscribe {
+                    setViewToMessage()
+                }
     }
 
     override fun onResume() {
@@ -140,5 +209,13 @@ class WifiMainActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         unregisterReceiver(mReceiver)
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        mInputStream.close()
+        mOutputStream.close()
+        mSocket.close()
+        mManager.stopPeerDiscovery(mChannel, mActionListener)
     }
 }

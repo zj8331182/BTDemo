@@ -3,6 +3,7 @@ package com.example.wifidemo
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.net.NetworkInfo
 import android.net.wifi.p2p.WifiP2pManager
 import android.net.wifi.p2p.WifiP2pManager.*
 import com.example.zhangmingzhe.zmzdemo.util.LogUtils
@@ -36,7 +37,19 @@ class WifiDirectBroadcastReceiver(private val mManager: WifiP2pManager, private 
                 mManager.requestPeers(mChannel, mPeerListener)
             }
             WIFI_P2P_CONNECTION_CHANGED_ACTION -> {
-            } // Respond to new connection or disconnections
+                // Respond to new connection or disconnections
+                val networkInfo = intent.getParcelableExtra<NetworkInfo>(EXTRA_NETWORK_INFO)
+                if (networkInfo.isConnected) {
+                    mManager.requestConnectionInfo(mChannel) { info ->
+                        mAvtivity.mHostAddress = info.groupOwnerAddress
+                        if (info.groupFormed and info.isGroupOwner) {
+                            mAvtivity.startSockService()
+                        } else if (info.groupFormed) {
+                            mAvtivity.connectTcpToService()
+                        }
+                    }
+                }
+            }
             WIFI_P2P_THIS_DEVICE_CHANGED_ACTION -> {
             } // Respond to this device's wifi state changing
         }
